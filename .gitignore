@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# Runtime state (machine-local, regenerated each run)
+leaps_state.db
+market_universe_cache.json

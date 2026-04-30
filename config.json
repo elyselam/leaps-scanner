@@ -1,0 +1,99 @@
+{
+  "watchlist": [
+    "GOOGL", "META",
+    "MU", "SNDK", "WDC",
+    "PLTR", "AAOI", "COHR",
+    "NVDA"
+  ],
+  "suggested_additions": ["AVGO", "TSM", "AMAT", "ANET", "MSFT", "CRWV", "NBIS"],
+  "use_suggested_additions": true,
+
+  "scan_interval_minutes": 45,
+  "market_hours_only": true,
+
+  "sector_map": {
+    "GOOGL": "XLC", "META": "XLC",
+    "MU": "SMH", "SNDK": "SMH", "WDC": "SMH",
+    "NVDA": "SMH", "AAOI": "SMH", "COHR": "SMH",
+    "PLTR": "XLK",
+    "AVGO": "SMH", "TSM": "SMH", "AMAT": "SMH", "ANET": "XLK", "MSFT": "XLK"
+  },
+
+  "thresholds": {
+    "ivr_min": 30,
+    "ivr_max": 50,
+    "rsi_oversold": 35,
+    "vix_elevated": 18,
+    "vix_calming_lookback": 5,
+    "dist_from_52w_high_min": 0.05,
+    "dist_from_52w_high_max": 0.40,
+    "days_to_earnings_min": 21,
+    "options_oi_min": 500,
+    "options_spread_max_pct": 0.08,
+    "leaps_dte_min": 300,
+    "leaps_dte_max": 600,
+    "delta_target_min": 0.55,
+    "delta_target_max": 0.85,
+    "volume_dryup_ratio": 0.85,
+    "debt_to_equity_max": 2.0,
+    "hv_rank_max": 50,
+    "iv_hv_ratio_max": 1.20,
+    "rs_lookback_days": 90
+  },
+
+  "weights": {
+    "trend_above_200d": 10,
+    "weekly_hh_hl": 5,
+    "rs_vs_spy_positive": 8,
+    "dist_from_52w_high_healthy": 6,
+    "rsi_oversold_or_div": 10,
+    "macd_curling_up": 8,
+    "volume_dryup": 6,
+    "iv_cheap": 12,
+    "iv_skew_ok": 5,
+    "term_structure_ok": 4,
+    "options_liquid": 10,
+    "fundamentals_ok": 8,
+    "no_near_earnings": 6,
+    "sector_rs_positive": 4,
+    "macro_regime_ok": 8
+  },
+
+  "tiers": {
+    "A_min_score": 70,
+    "B_min_score": 50
+  },
+
+  "dedupe_hours": 12,
+
+  "weekly_universe": [
+    "AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "TSLA", "AMD",
+    "AVGO", "MU", "SNDK", "AMAT", "LRCX", "KLAC", "QCOM", "INTC", "ARM", "MRVL",
+    "PLTR", "CRWD", "PANW", "ZS", "NET", "DDOG", "SNOW", "COIN",
+    "ANET", "SMCI", "DELL", "HPQ", "IBM",
+    "SHOP", "UBER", "ABNB", "LYFT", "RBLX", "ROKU",
+    "JPM", "GS", "MS", "BAC", "C", "V", "MA", "PYPL", "SCHW",
+    "LLY", "UNH", "ABBV", "PFE", "MRNA", "AMGN", "GILD", "REGN", "VRTX",
+    "XOM", "CVX", "OXY", "SLB",
+    "NFLX", "DIS", "CMCSA", "SPOT",
+    "NKE", "SBUX", "MCD", "COST", "WMT", "TGT", "HD",
+    "BA", "CAT", "DE", "GE", "HON", "LMT", "RTX",
+    "SPY", "QQQ", "IWM", "SMH", "SOXX", "XLF", "XBI", "GLD", "TLT",
+    "COHR", "WDC", "AAOI", "TSM", "CRWV", "NBIS", "MSFT"
+  ],
+
+  "weekly_min_score": 6,
+
+  "meme_universe": [
+    "GME", "AMC", "BB", "NOK", "KOSS", "EXPR",
+    "BBIG", "ATER", "MULN", "PROG", "HYMC", "NEGG",
+    "CVNA", "BYND", "UPST", "WOLF", "AI", "SAVE", "FUBO", "BIG",
+    "DJT", "PHUN", "DWAC",
+    "RIVN", "LCID", "NIO", "XPEV", "LI",
+    "PLTR", "RBLX", "HOOD", "COIN", "SOFI", "AFRM",
+    "MARA", "RIOT", "CLSK", "HUT", "BITF", "MSTR",
+    "OPEN", "WBA", "TLRY", "CGC", "ACB", "SNDL",
+    "SPCE", "JOBY", "ACHR",
+    "TSLA", "NVDA", "AMD", "PLUG", "FCEL", "QS"
+  ]
+}

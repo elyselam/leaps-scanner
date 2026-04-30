@@ -1,0 +1,187 @@
+name: Options Scanner
+
+# Schedule (Eastern Time, US market hours):
+#   - 9:30 AM ET (market open) → first run
+#   - Every 15 min until 11:30 AM ET (first 2 hours)
+#   - Hourly at :30 from 12:30 to 15:30 ET (last run before close)
+#
+# GitHub Actions cron is UTC and does NOT auto-adjust for DST. The cron lines
+# below are the UNION of every UTC time that ANY target ET slot maps to,
+# across both EDT (UTC-4) and EST (UTC-5). The runtime gate filters to actual
+# target ET slots so wrong-DST firings no-op cleanly with no double-fires.
+#
+# GH Actions cron is best-effort — fires can be delayed 5–15 min during peak
+# load. Gate accepts ±10 min tolerance around each slot.
+
+on:
+  schedule:
+    # ET slot → EDT UTC ∪ EST UTC (deduped):
+    #   09:30 ET → 13:30 UTC (EDT only)
+    #   09:45 ET → 13:45 UTC (EDT only)
+    #   10:00 ET → 14:00 UTC (EDT) | 09:00 ET if EST → not target
+    #   10:15 ET → 14:15 UTC (EDT)
+    #   10:30 ET → 14:30 UTC (EDT) | 09:30 ET if EST → also target ✓
+    #   10:45 ET → 14:45 UTC (EDT) | 09:45 ET if EST → also target ✓
+    #   11:00 ET → 15:00 UTC (EDT) | 10:00 ET if EST → also target ✓
+    #   11:15 ET → 15:15 UTC (EDT) | 10:15 ET if EST → also target ✓
+    #   11:30 ET → 15:30 UTC (EDT) | 10:30 ET if EST → also target ✓
+    #   ―     → 15:45 UTC (EST 10:45)
+    #   ―     → 16:00 UTC (EST 11:00)
+    #   ―     → 16:15 UTC (EST 11:15)
+    #   12:30 ET → 16:30 UTC (EDT) | 11:30 ET if EST → also target ✓
+    #   13:30 ET → 17:30 UTC (EDT) | 12:30 ET if EST → also target ✓
+    #   14:30 ET → 18:30 UTC (EDT) | 13:30 ET if EST → also target ✓
+    #   15:30 ET → 19:30 UTC (EDT) | 14:30 ET if EST → also target ✓
+    #   ―     → 20:30 UTC (EST 15:30)
+    - cron: '30,45 13 * * 1-5'
+    - cron: '0,15,30,45 14 * * 1-5'
+    - cron: '0,15,30,45 15 * * 1-5'
+    - cron: '0,15,30 16 * * 1-5'
+    - cron: '30 17,18,19,20 * * 1-5'
+
+  # Manual trigger from the Actions tab — useful for testing
+  workflow_dispatch:
+    inputs:
+      scanner:
+        description: 'Which scanner to run (all = leaps+weekly+meme+market)'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, leaps, weekly, meme, market]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Don't pile up if a previous run is still going (market scan can take ~5 min)
+  group: scanner-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      LEAPS_ALERT_WEBHOOK_URL: ${{ secrets.LEAPS_ALERT_WEBHOOK_URL }}
+      SELL_ALERT_WEBHOOK_URL:  ${{ secrets.SELL_ALERT_WEBHOOK_URL }}
+      WEEKLY_WEBHOOK_URL:      ${{ secrets.WEEKLY_WEBHOOK_URL }}
+      MEME_WEBHOOK_URL:        ${{ secrets.MEME_WEBHOOK_URL }}
+      MARKET_WEBHOOK_URL:      ${{ secrets.MARKET_WEBHOOK_URL }}
+      POLYGON_API_KEY:         ${{ secrets.POLYGON_API_KEY }}
+      FINNHUB_API_KEY:         ${{ secrets.FINNHUB_API_KEY }}
+      NEWS_HOURS_BACK:         '48'
+      RISK_FREE_RATE:          '0.045'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Gate: only continue if current ET time is in a target slot ─────
+      # workflow_dispatch always passes (manual run = always run).
+      - name: Check ET market-hours slot
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run — skipping ET gate"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          python3 - <<'PYEOF'
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          now = datetime.now(ZoneInfo("America/New_York"))
+          print(f"ET: {now:%a %Y-%m-%d %H:%M}")
+          if now.weekday() >= 5:
+              print("Weekend — skipping"); sys.exit(1)
+
+          # Target slots: every 15 min from 09:30–11:30, then hourly :30
+          targets = [(h, m) for h in (9, 10, 11) for m in (0, 15, 30, 45)
+                     if not (h == 9 and m < 30) and not (h == 11 and m > 30)]
+          targets += [(h, 30) for h in (12, 13, 14, 15)]
+
+          cur = now.hour * 60 + now.minute
+          for th, tm in targets:
+              if abs(cur - (th * 60 + tm)) <= 10:
+                  print(f"In slot near {th:02d}:{tm:02d} ET"); sys.exit(0)
+          print(f"Off-slot — skipping ({now:%H:%M} ET not within ±10 min of any target)")
+          sys.exit(1)
+          PYEOF
+          if [ $? -eq 0 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Persist LEAPS dedupe state across runs so the same alert doesn't
+      # repost every 15 min. Each run saves a new cache entry; the
+      # restore-keys prefix match pulls the most recent one on the next run.
+      - name: Restore LEAPS state cache
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: leaps_state.db
+          key: leaps-state-${{ github.run_id }}
+          restore-keys: |
+            leaps-state-
+
+      # Universe cache (S&P 500 + Nasdaq-100 from Wikipedia) — refreshed
+      # daily by the script's own 24h TTL, but persisting saves the
+      # Wikipedia hit on every run.
+      - name: Restore market universe cache
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: market_universe_cache.json
+          key: market-universe-${{ github.run_id }}
+          restore-keys: |
+            market-universe-
+
+      # ── Scanners (run sequentially) ─────────────────────────────────────
+      # `|| true` so a single scanner failure doesn't kill the rest.
+      # `inputs.scanner` is empty on cron runs (always runs all four).
+
+      - name: LEAPS scanner
+        if: |
+          steps.gate.outputs.run == 'true' &&
+          (github.event_name == 'schedule' ||
+           inputs.scanner == 'all' || inputs.scanner == 'leaps')
+        run: python main.py || true
+
+      - name: Weekly options scanner (curated list)
+        if: |
+          steps.gate.outputs.run == 'true' &&
+          (github.event_name == 'schedule' ||
+           inputs.scanner == 'all' || inputs.scanner == 'weekly')
+        run: python main.py --weekly || true
+
+      - name: Meme / squeeze scanner
+        if: |
+          steps.gate.outputs.run == 'true' &&
+          (github.event_name == 'schedule' ||
+           inputs.scanner == 'all' || inputs.scanner == 'meme')
+        run: python main.py --meme || true
+
+      - name: Market-wide scanner (S&P 500 + Nasdaq-100)
+        if: |
+          steps.gate.outputs.run == 'true' &&
+          (github.event_name == 'schedule' ||
+           inputs.scanner == 'all' || inputs.scanner == 'market')
+        run: python main.py --market || true

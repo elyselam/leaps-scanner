@@ -1,0 +1,38 @@
+[
+  {
+    "ticker": "NVDA",
+    "strike": 200,
+    "expiry": "2027-03-19",
+    "option_type": "call",
+    "entry_price": 0.00,
+    "contracts": 1,
+    "entry_date": "2026-04-18",
+    "profit_target_pct": 75,
+    "stop_loss_pct": 40,
+    "dte_alert": 90
+  },
+  {
+    "ticker": "SNDK",
+    "strike": 1000,
+    "expiry": "2027-06-17",
+    "option_type": "call",
+    "entry_price": 0.00,
+    "contracts": 1,
+    "entry_date": "2026-04-18",
+    "profit_target_pct": 75,
+    "stop_loss_pct": 40,
+    "dte_alert": 90
+  },
+  {
+    "ticker": "MU",
+    "strike": 520,
+    "expiry": "2027-03-19",
+    "option_type": "call",
+    "entry_price": 0.00,
+    "contracts": 1,
+    "entry_date": "2026-04-18",
+    "profit_target_pct": 75,
+    "stop_loss_pct": 40,
+    "dte_alert": 90
+  }
+]
