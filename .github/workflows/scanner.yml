@@ -43,11 +43,11 @@ on:
   workflow_dispatch:
     inputs:
       scanner:
-        description: 'Which scanner to run (all = leaps+weekly+meme+market+rotation)'
+        description: 'Which scanner to run (all = every scanner)'
         required: false
         default: 'all'
         type: choice
-        options: [all, leaps, weekly, meme, market, rotation]
+        options: [all, leaps, weekly, meme, market, rotation, earnings]
 
 permissions:
   contents: read
@@ -68,6 +68,7 @@ jobs:
       WEEKLY_WEBHOOK_URL:      ${{ secrets.WEEKLY_WEBHOOK_URL }}
       MEME_WEBHOOK_URL:        ${{ secrets.MEME_WEBHOOK_URL }}
       MARKET_WEBHOOK_URL:      ${{ secrets.MARKET_WEBHOOK_URL }}
+      EARNINGS_WEBHOOK_URL:    ${{ secrets.EARNINGS_WEBHOOK_URL }}
       POLYGON_API_KEY:         ${{ secrets.POLYGON_API_KEY }}
       FINNHUB_API_KEY:         ${{ secrets.FINNHUB_API_KEY }}
       NEWS_HOURS_BACK:         '48'
@@ -192,3 +193,10 @@ jobs:
           (github.event_name == 'schedule' ||
            inputs.scanner == 'all' || inputs.scanner == 'rotation')
         run: python main.py --rotation || true
+
+      - name: Earnings play scanner
+        if: |
+          steps.gate.outputs.run == 'true' &&
+          (github.event_name == 'schedule' ||
+           inputs.scanner == 'all' || inputs.scanner == 'earnings')
+        run: python main.py --earnings || true

@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 import requests
 
+from earnings_scanner import EarningsPlay
 from exit_signals import ExitAlert
 from meme_scanner import MemeAlert
 from rotation_scanner import RotationSignal
@@ -658,3 +659,143 @@ def send_rotation_alerts(
     }
 
     _post(webhook_url, {"embeds": [embed]})
+
+
+# ── earnings alerts (#earnings) ───────────────────────────────────────────────
+
+PLAY_TYPE_EMOJI = {
+    "CALL":     "📈",
+    "PUT":      "📉",
+    "STRADDLE": "↕️",
+    "IV_CRUSH": "💰",
+}
+PLAY_TYPE_COLOR = {
+    "CALL":     0x2ecc71,   # green
+    "PUT":      0xe74c3c,   # red
+    "STRADDLE": 0xf39c12,   # orange
+    "IV_CRUSH": 0x9b59b6,   # purple
+}
+PLAY_TYPE_LABEL = {
+    "CALL":     "Earnings CALL",
+    "PUT":      "Earnings PUT",
+    "STRADDLE": "Earnings Straddle (buy vol)",
+    "IV_CRUSH": "Earnings IV Crush (sell vol)",
+}
+
+
+def _earnings_embed(p: EarningsPlay) -> Dict:
+    emoji = PLAY_TYPE_EMOJI.get(p.play_type, "🎯")
+    timing_str = {"BMO": "pre-market", "AMC": "after-hours"}.get(p.er_timing, "")
+    timing_tag = f" ({timing_str})" if timing_str else ""
+
+    description = (
+        f"Stock **${p.stock_price:.2f}**  ·  "
+        f"Earnings **{p.earnings_date}**{timing_tag}  ·  "
+        f"**{p.days_to_er}** day{'s' if p.days_to_er != 1 else ''} away"
+    )
+
+    # Vol pricing field
+    if p.iv_vs_hist_ratio <= 0.85:
+        vol_verdict = "**🟢 VOL IS CHEAP**"
+    elif p.iv_vs_hist_ratio >= 1.25:
+        vol_verdict = "**🔴 VOL IS EXPENSIVE**"
+    else:
+        vol_verdict = "**⚪ VOL IS FAIR**"
+
+    vol_val = (
+        f"Expected move: **±{p.implied_move_pct*100:.1f}%** "
+        f"(${p.implied_move_pct * p.stock_price:.2f})\n"
+        f"Historical avg: **±{p.historical_move_pct*100:.1f}%** "
+        f"(last {p.num_quarters} ER)\n"
+        f"{vol_verdict} — ratio {p.iv_vs_hist_ratio:.2f}"
+    )
+
+    # Historical moves sparkline
+    if p.last_moves:
+        move_strs = []
+        for m in p.last_moves[:6]:
+            icon = "🟢" if m > 0 else "🔴"
+            move_strs.append(f"{icon}{m*100:+.1f}%")
+        hist_val = "  ".join(move_strs)
+    else:
+        hist_val = "—"
+
+    # Reasons
+    reasons_val = "\n".join(f"• {r}" for r in p.reasons) or "—"
+
+    fields: List[Dict] = [
+        {"name": "📊 Vol Pricing",     "value": vol_val,    "inline": False},
+        {"name": "📅 Last ER moves",   "value": hist_val,   "inline": False},
+        {"name": "✅ Why this play",   "value": reasons_val[:1024], "inline": False},
+    ]
+
+    # Suggested contract
+    if p.suggested_strike and p.suggested_expiry:
+        if p.suggested_type == "straddle":
+            contract_val = (
+                f"`${p.suggested_strike:.0f} Straddle  {p.suggested_expiry}`\n"
+                f"Mid **${p.suggested_mid:.2f}**"
+            )
+        else:
+            oi_str = f"  ·  OI {p.suggested_oi:,}" if p.suggested_oi else ""
+            contract_val = (
+                f"`${p.suggested_strike:.0f}{p.suggested_type}  "
+                f"{p.suggested_expiry}`\n"
+                f"Mid **${p.suggested_mid:.2f}**{oi_str}"
+            )
+        fields.append({
+            "name": f"📋 Suggested {p.play_type}",
+            "value": contract_val,
+            "inline": False,
+        })
+
+    return {
+        "title":       f"{emoji} {p.ticker} — {PLAY_TYPE_LABEL.get(p.play_type, p.play_type)}",
+        "description": description,
+        "color":       PLAY_TYPE_COLOR.get(p.play_type, 0x95a5a6),
+        "fields":      fields,
+    }
+
+
+def send_earnings_alerts(
+    webhook_url: str,
+    plays: List[EarningsPlay],
+    dry_run: bool = False,
+) -> None:
+    if not plays:
+        print("[discord] no earnings plays to send")
+        return
+
+    if dry_run or not webhook_url:
+        print(f"\n[DRY earnings] {'─'*60}")
+        for p in plays:
+            emoji = PLAY_TYPE_EMOJI.get(p.play_type, "🎯")
+            timing_str = {"BMO": "pre-market", "AMC": "after-hours"}.get(p.er_timing, "")
+            print(f"\n  {emoji} {p.ticker}  {p.play_type}  ER {p.earnings_date} "
+                  f"{timing_str}  ({p.days_to_er}d)")
+            print(f"  ${p.stock_price:.2f}  ·  implied ±{p.implied_move_pct*100:.1f}%  "
+                  f"vs hist ±{p.historical_move_pct*100:.1f}%  "
+                  f"(ratio {p.iv_vs_hist_ratio:.2f})")
+            print(f"  drift {p.pre_er_drift_5d*100:+.1f}%  ·  beat rate {p.beat_rate*100:.0f}%  "
+                  f"·  score {p.score:.1f}")
+            if p.last_moves:
+                moves_str = "  ".join(f"{m*100:+.1f}%" for m in p.last_moves[:6])
+                print(f"  last ER moves: {moves_str}")
+            for r in p.reasons:
+                print(f"    • {r}")
+        return
+
+    # Group by days-to-ER for a natural header
+    by_days: Dict[int, List[EarningsPlay]] = {}
+    for p in plays:
+        by_days.setdefault(p.days_to_er, []).append(p)
+
+    # Header
+    day_strs = []
+    for d in sorted(by_days.keys()):
+        n = len(by_days[d])
+        label = "tomorrow" if d == 1 else f"in {d} days"
+        day_strs.append(f"{n} {label}")
+    summary = " · ".join(day_strs)
+    _post(webhook_url, {"content": f"**🎯 Earnings plays** — {summary}"})
+    _post_embeds(webhook_url, [_earnings_embed(p) for p in plays])

@@ -31,9 +31,10 @@ from data import (
     PolygonClient,
 )
 from discord_sender import (
-    send_alerts, send_digest, send_meme_alerts,
+    send_alerts, send_digest, send_earnings_alerts, send_meme_alerts,
     send_rotation_alerts, send_sell_alerts, send_weekly_alerts,
 )
+from earnings_scanner import scan_earnings
 from exit_signals import compute_exit_signals, ExitAlert
 from market_scanner import scan_market
 from meme_scanner import scan_meme
@@ -283,6 +284,7 @@ def main() -> int:
     ap.add_argument("--weekly",  action="store_true", help="run weekly options scanner (curated list)")
     ap.add_argument("--market",   action="store_true", help="run market-wide weekly scanner (S&P 500 + Nasdaq-100)")
     ap.add_argument("--rotation", action="store_true", help="run sector rotation detector")
+    ap.add_argument("--earnings", action="store_true", help="run earnings play scanner")
     ap.add_argument("--meme",     action="store_true", help="run meme/squeeze/unusual-volume scanner")
     args = ap.parse_args()
 
@@ -389,6 +391,49 @@ def main() -> int:
             print(f"[rotation] posted {len(signals)} signals to #market-scan")
         else:
             print("[rotation] no clear rotation signals today")
+        return 0
+
+    # ── earnings play scanner ─────────────────────────────────────────────
+    if args.earnings:
+        earnings_webhook = os.getenv("EARNINGS_WEBHOOK_URL")
+        _check_webhook("EARNINGS_WEBHOOK_URL", earnings_webhook, "earnings", args.dry_run)
+        plays = scan_earnings(dry_run=args.dry_run)
+
+        # Dedup: same (ticker, play_type, earnings_date) within 12h
+        dedupe_hours = cfg.get("dedupe_hours", 12)
+        candidates = []
+        suppressed_names = []
+        for p in plays:
+            h = compute_channel_hash("earnings", p.ticker, p.play_type, p.earnings_date)
+            if was_recently_alerted(p.ticker, h, dedupe_hours):
+                suppressed_names.append(f"{p.ticker}({p.play_type})")
+                continue
+            candidates.append((p, h))
+        suppressed = len(plays) - len(candidates)
+        if suppressed:
+            print(f"[earnings] suppressed {suppressed} unchanged plays (last {dedupe_hours}h): "
+                  f"{', '.join(suppressed_names)}")
+
+        # Top 5 by score
+        candidates.sort(key=lambda x: -x[0].score)
+        top5 = candidates[:5]
+        to_post = [p for p, _ in top5]
+
+        if to_post:
+            print(f"[earnings] posting top {len(to_post)}:")
+            for p in to_post:
+                print(f"  {p.ticker:6s}  {p.play_type:10s}  ER {p.earnings_date}  "
+                      f"implied ±{p.implied_move_pct*100:.1f}%  "
+                      f"hist ±{p.historical_move_pct*100:.1f}%  "
+                      f"score={p.score:.1f}")
+        elif plays:
+            print("[earnings] all plays already alerted recently — nothing new to post")
+
+        if not args.dry_run:
+            for p, h in top5:
+                mark_alerted(p.ticker, h)
+
+        send_earnings_alerts(earnings_webhook, to_post, dry_run=args.dry_run)
         return 0
 
     # ── meme / squeeze scanner ────────────────────────────────────────────
