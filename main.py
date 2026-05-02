@@ -32,11 +32,12 @@ from data import (
 )
 from discord_sender import (
     send_alerts, send_digest, send_meme_alerts,
-    send_sell_alerts, send_weekly_alerts,
+    send_rotation_alerts, send_sell_alerts, send_weekly_alerts,
 )
 from exit_signals import compute_exit_signals, ExitAlert
 from market_scanner import scan_market
 from meme_scanner import scan_meme
+from rotation_scanner import scan_rotation
 from weekly_scanner import scan_weekly
 from scoring import ScoreResult, score_ticker
 from signals import (
@@ -280,8 +281,9 @@ def main() -> int:
     ap.add_argument("--tickers", nargs="+",           help="override watchlist")
     ap.add_argument("--force",   action="store_true", help="ignore market-hours gate")
     ap.add_argument("--weekly",  action="store_true", help="run weekly options scanner (curated list)")
-    ap.add_argument("--market",  action="store_true", help="run market-wide weekly scanner (S&P 500 + Nasdaq-100)")
-    ap.add_argument("--meme",    action="store_true", help="run meme/squeeze/unusual-volume scanner")
+    ap.add_argument("--market",   action="store_true", help="run market-wide weekly scanner (S&P 500 + Nasdaq-100)")
+    ap.add_argument("--rotation", action="store_true", help="run sector rotation detector")
+    ap.add_argument("--meme",     action="store_true", help="run meme/squeeze/unusual-volume scanner")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -359,6 +361,34 @@ def main() -> int:
                 mark_alerted(a.ticker, h)
 
         send_weekly_alerts(market_webhook, to_post, mode="BOTH", dry_run=args.dry_run)
+        return 0
+
+    # ── sector rotation detector ──────────────────────────────────────────
+    if args.rotation:
+        market_webhook = os.getenv("MARKET_WEBHOOK_URL")
+        _check_webhook("MARKET_WEBHOOK_URL", market_webhook, "rotation", args.dry_run)
+        signals, macro = scan_rotation(dry_run=args.dry_run)
+
+        # Dedup: only re-post if the rotation picture changes.
+        # Hash on the set of (ticker, signal_type) for ROTATING_IN and ROTATING_OUT —
+        # those are the actionable ones. If the same sectors are still rotating
+        # in/out, don't re-post. An acceleration change or a new entrant re-triggers.
+        dedupe_hours = cfg.get("dedupe_hours", 12)
+        actionable = [s for s in signals if s.signal in ("ROTATING_IN", "ROTATING_OUT")]
+        # Build a single composite hash from all actionable signals
+        sig_key = "|".join(sorted(f"{s.ticker}:{s.signal}" for s in actionable))
+        rotation_hash = compute_channel_hash("rotation", sig_key)
+
+        if was_recently_alerted("__ROTATION__", rotation_hash, dedupe_hours):
+            print("[rotation] same rotation picture as last alert — suppressed")
+        elif actionable:
+            # Post all signals (including accelerating/decelerating for context)
+            send_rotation_alerts(market_webhook, signals, macro, dry_run=args.dry_run)
+            if not args.dry_run:
+                mark_alerted("__ROTATION__", rotation_hash)
+            print(f"[rotation] posted {len(signals)} signals to #market-scan")
+        else:
+            print("[rotation] no clear rotation signals today")
         return 0
 
     # ── meme / squeeze scanner ────────────────────────────────────────────

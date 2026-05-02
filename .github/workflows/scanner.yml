@@ -43,11 +43,11 @@ on:
   workflow_dispatch:
     inputs:
       scanner:
-        description: 'Which scanner to run (all = leaps+weekly+meme+market)'
+        description: 'Which scanner to run (all = leaps+weekly+meme+market+rotation)'
         required: false
         default: 'all'
         type: choice
-        options: [all, leaps, weekly, meme, market]
+        options: [all, leaps, weekly, meme, market, rotation]
 
 permissions:
   contents: read
@@ -185,3 +185,10 @@ jobs:
           (github.event_name == 'schedule' ||
            inputs.scanner == 'all' || inputs.scanner == 'market')
         run: python main.py --market || true
+
+      - name: Sector rotation detector
+        if: |
+          steps.gate.outputs.run == 'true' &&
+          (github.event_name == 'schedule' ||
+           inputs.scanner == 'all' || inputs.scanner == 'rotation')
+        run: python main.py --rotation || true

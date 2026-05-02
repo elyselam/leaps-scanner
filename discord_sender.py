@@ -7,6 +7,7 @@ import requests
 
 from exit_signals import ExitAlert
 from meme_scanner import MemeAlert
+from rotation_scanner import RotationSignal
 from scoring import ScoreResult
 from weekly_scanner import WeeklyAlert
 
@@ -540,3 +541,120 @@ def send_meme_alerts(webhook_url: str, alerts: List[MemeAlert], dry_run: bool = 
                            for t, n in counts.items())
     _post(webhook_url, {"content": f"**🎰 Meme / squeeze scan**  —  {summary}"})
     _post_embeds(webhook_url, [_meme_embed(a) for a in alerts])
+
+
+# ── rotation alerts (#market-scan) ────────────────────────────────────────────
+
+ROTATION_EMOJI = {
+    "ROTATING_IN":  "🔄",
+    "ACCELERATING": "⚡",
+    "ROTATING_OUT": "🚪",
+    "DECELERATING": "📉",
+}
+ROTATION_COLOR = {
+    "ROTATING_IN":  0x2ecc71,   # green — fresh opportunity
+    "ACCELERATING": 0x3498db,   # blue — confirmed trend
+    "ROTATING_OUT": 0xe74c3c,   # red — exit/avoid
+    "DECELERATING": 0x95a5a6,   # grey — fading
+}
+
+
+def _rotation_section(signals: List[RotationSignal], signal_type: str, label: str) -> str:
+    """Format a group of rotation signals as a compact text block for an embed field."""
+    group = [s for s in signals if s.signal == signal_type]
+    if not group:
+        return ""
+    lines = []
+    for s in group[:5]:
+        vol_tag = f"  📊 vol {s.vol_ratio_5d:.1f}x" if s.vol_ratio_5d >= 1.2 else ""
+        hi_tag  = " 🚩" if s.dist_from_high <= 0.03 else ""
+        lines.append(
+            f"**{s.ticker}** ({s.name})  ·  "
+            f"5d RS {s.rs_5d*100:+.1f}%  ·  accel {s.rs_accel*100:+.1f}%"
+            f"{vol_tag}{hi_tag}"
+        )
+    return "\n".join(lines)
+
+
+def send_rotation_alerts(
+    webhook_url: str,
+    signals: List[RotationSignal],
+    macro_context: str,
+    dry_run: bool = False,
+) -> None:
+    if not signals:
+        print("[discord] no rotation signals to send")
+        return
+
+    if dry_run or not webhook_url:
+        print(f"\n[DRY rotation] {'─'*60}")
+        print(f"  Macro: {macro_context}")
+        for s in signals:
+            emoji = ROTATION_EMOJI.get(s.signal, "")
+            print(f"  {emoji} {s.ticker:5s} ({s.name:18s})  {s.signal:14s}  "
+                  f"5dRS={s.rs_5d*100:+.1f}%  accel={s.rs_accel*100:+.1f}%  "
+                  f"vol={s.vol_ratio_5d:.1f}x")
+        return
+
+    # Build a single rich embed with sections
+    fields: List[Dict] = []
+
+    # Macro context at top
+    fields.append({
+        "name": "🌍 Market Regime",
+        "value": macro_context,
+        "inline": False,
+    })
+
+    # Rotating IN (most important — fresh opportunities)
+    sec_in = _rotation_section(signals, "ROTATING_IN", "Rotating INTO")
+    if sec_in:
+        fields.append({
+            "name": "🔄 Rotating INTO (fresh money inflow)",
+            "value": sec_in,
+            "inline": False,
+        })
+
+    # Accelerating
+    sec_acc = _rotation_section(signals, "ACCELERATING", "Accelerating")
+    if sec_acc:
+        fields.append({
+            "name": "⚡ Accelerating (momentum confirmed)",
+            "value": sec_acc,
+            "inline": False,
+        })
+
+    # Rotating OUT (avoid / exit)
+    sec_out = _rotation_section(signals, "ROTATING_OUT", "Rotating OUT")
+    if sec_out:
+        fields.append({
+            "name": "🚪 Rotating OUT (money leaving)",
+            "value": sec_out,
+            "inline": False,
+        })
+
+    # Decelerating (optional — include if slots remain)
+    sec_dec = _rotation_section(signals, "DECELERATING", "Decelerating")
+    if sec_dec:
+        fields.append({
+            "name": "📉 Decelerating (losing steam)",
+            "value": sec_dec,
+            "inline": False,
+        })
+
+    # Count by signal type for the title
+    in_ct  = sum(1 for s in signals if s.signal == "ROTATING_IN")
+    out_ct = sum(1 for s in signals if s.signal == "ROTATING_OUT")
+    title_parts = []
+    if in_ct:  title_parts.append(f"{in_ct} rotating in")
+    if out_ct: title_parts.append(f"{out_ct} rotating out")
+    title_summary = " · ".join(title_parts) if title_parts else f"{len(signals)} signals"
+
+    embed = {
+        "title":       f"🧭 Sector Rotation — {title_summary}",
+        "description": "Where institutional money is flowing based on sector RS acceleration vs SPY",
+        "color":       0x9b59b6,   # purple — distinct from other scanners
+        "fields":      fields,
+    }
+
+    _post(webhook_url, {"embeds": [embed]})
