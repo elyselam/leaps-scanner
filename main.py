@@ -84,6 +84,25 @@ def resolve_watchlist(cfg: Dict, override: List[str] | None) -> List[str]:
     return out
 
 
+def _check_webhook(name: str, url: str | None, channel: str, dry_run: bool) -> None:
+    """Loud warning if a Discord webhook env var is missing on a real run.
+
+    Without this, a missing/typo'd secret produces a green workflow with no
+    Discord posts and no error — symptom is "channel went silent" with no
+    obvious cause. Print a banner at the top of the scanner branch so the
+    misconfiguration is the first thing you see in the run log.
+    """
+    if dry_run:
+        return
+    if not url:
+        print(f"[{channel}] ⚠️  {name} not set — Discord posts will be SKIPPED. "
+              f"Set it as a GitHub Actions secret (Settings → Secrets → Actions).")
+    else:
+        # Last 6 chars only — enough to confirm in logs without leaking the URL
+        tail = url[-6:] if len(url) >= 6 else "***"
+        print(f"[{channel}] {name} configured (...{tail})")
+
+
 def is_market_hours() -> bool:
     """Roughly 9:30–16:00 ET, Mon–Fri. Doesn't account for holidays."""
     now = datetime.now(ET)
@@ -94,6 +113,13 @@ def is_market_hours() -> bool:
 
 
 def scan_once(cfg: Dict, watchlist: List[str], dry_run: bool) -> List[ScoreResult]:
+    # Surface webhook config status up-front so a missing secret is the first
+    # thing visible in the workflow log (not buried after a 5-min scan).
+    leaps_webhook_early = os.getenv("LEAPS_ALERT_WEBHOOK_URL")
+    sell_webhook_early  = os.getenv("SELL_ALERT_WEBHOOK_URL")
+    _check_webhook("LEAPS_ALERT_WEBHOOK_URL", leaps_webhook_early, "leaps", dry_run)
+    _check_webhook("SELL_ALERT_WEBHOOK_URL",  sell_webhook_early,  "leaps", dry_run)
+
     thresholds = cfg["thresholds"]
     weights = cfg["weights"]
     tiers = cfg["tiers"]
@@ -266,6 +292,7 @@ def main() -> int:
         if args.tickers:
             universe = [t.upper() for t in args.tickers]
         weekly_webhook = os.getenv("WEEKLY_WEBHOOK_URL")
+        _check_webhook("WEEKLY_WEBHOOK_URL", weekly_webhook, "weekly", args.dry_run)
         alerts = scan_weekly(universe, dry_run=args.dry_run)
         # Calls only — bullish setups only, drop PUTs before ranking.
         before = len(alerts)
@@ -289,6 +316,7 @@ def main() -> int:
     # ── market-wide weekly scanner ────────────────────────────────────────
     if args.market:
         market_webhook = os.getenv("MARKET_WEBHOOK_URL")
+        _check_webhook("MARKET_WEBHOOK_URL", market_webhook, "market", args.dry_run)
         alerts = scan_market(dry_run=args.dry_run)
         # Calls-only — bullish setups only
         before = len(alerts)
@@ -339,21 +367,25 @@ def main() -> int:
         if args.tickers:
             universe = [t.upper() for t in args.tickers]
         meme_webhook = os.getenv("MEME_WEBHOOK_URL")
+        _check_webhook("MEME_WEBHOOK_URL", meme_webhook, "meme", args.dry_run)
         alerts = scan_meme(universe, dry_run=args.dry_run)
 
         # Dedup: same (ticker, tier) within the last 12h is suppressed.
         # Tier change (WATCH→UNUSUAL→SQUEEZE) re-alerts because the hash
         # changes — that's a real status upgrade worth surfacing.
         dedupe_hours = cfg.get("dedupe_hours", 12)
-        candidates = []   # (alert, hash)
+        candidates       = []   # (alert, hash)
+        suppressed_names = []   # for logging — see "where did GME go?"
         for a in alerts:
             h = compute_channel_hash("meme", a.ticker, a.tier)
             if was_recently_alerted(a.ticker, h, dedupe_hours):
+                suppressed_names.append(f"{a.ticker}({a.tier})")
                 continue
             candidates.append((a, h))
         suppressed = len(alerts) - len(candidates)
         if suppressed:
-            print(f"[meme] suppressed {suppressed} unchanged setups (last {dedupe_hours}h)")
+            print(f"[meme] suppressed {suppressed} unchanged setups (last {dedupe_hours}h): "
+                  f"{', '.join(suppressed_names)}")
 
         # Top 5 by rally_score (alerts are pre-sorted but candidates may
         # have been re-ordered by dedup — re-sort to be safe)

@@ -658,9 +658,25 @@ def _find_contract(
 
 # ── main scan ─────────────────────────────────────────────────────────────────
 
-def scan_weekly(universe: List[str], dry_run: bool = False) -> List[WeeklyAlert]:
+def scan_weekly(
+    universe: List[str],
+    dry_run: bool = False,
+    news_cap: int = 25,
+    min_score: int = MIN_SCORE,
+) -> List[WeeklyAlert]:
     """Scan universe for weekly options setups across BOTH expiries (this
     Friday AND next Friday). Returns alerts sorted by expiry, then score desc.
+
+    Args:
+      news_cap:  max tickers that get news+earnings enrichment. Beyond this,
+                 candidates are dropped silently. Default 25 is tuned for the
+                 ~85-name curated list. The market scanner (~60 prescreen
+                 survivors) should raise this so its top survivors don't get
+                 truncated.
+      min_score: minimum score required to emit an alert. Default 8 fits the
+                 curated list where most names have rich Polygon news. The
+                 market scanner sees lots of mid-caps with sparse news, so it
+                 passes a lower bar (e.g. 7) to compensate.
 
     Pipeline:
       1. Batch-fetch bars (once)
@@ -691,17 +707,21 @@ def scan_weekly(universe: List[str], dry_run: bool = False) -> List[WeeklyAlert]
             continue
         sig = _compute_signals(bars, spy_bars)
         direction, tech_score, _ = _score(sig)            # no context yet
-        if tech_score >= MIN_SCORE - 2 and direction:     # widen pre-filter
+        if tech_score >= min_score - 2 and direction:     # widen pre-filter
             pre_candidates.append((ticker, sig, tech_score))
 
     pre_candidates.sort(key=lambda x: -x[2])
-    print(f"[weekly] {len(pre_candidates)} passed technical screen — fetching news + earnings...")
+    print(f"[weekly] {len(pre_candidates)} passed technical screen "
+          f"(min_score={min_score}, news_cap={news_cap}) — fetching news + earnings...")
 
     # ── 3. enrich with earnings + news ONCE (expiry-independent) ─────────
     # We compute earnings_before_expiry separately per expiry below.
     far_expiry = targets[-1][0]   # use the farther Friday for the initial fetch
     enriched_tickers = []   # (ticker, sig, base_ctx)
-    for ticker, sig, _ in pre_candidates[:25]:    # cap to control API calls
+    truncated = max(0, len(pre_candidates) - news_cap)
+    if truncated:
+        print(f"[weekly] news_cap={news_cap} — dropping {truncated} lower-tech-score candidates from enrichment")
+    for ticker, sig, _ in pre_candidates[:news_cap]:
         ctx = _fetch_news_and_earnings(ticker, far_expiry)
         n_arts  = ctx.get("news_article_count") or 0
         n_srcs  = ",".join(ctx.get("news_sources") or []) or "-"
@@ -730,11 +750,11 @@ def scan_weekly(universe: List[str], dry_run: bool = False) -> List[WeeklyAlert]
             )
 
             direction, score, reasons = _score(sig, ctx)
-            if score >= MIN_SCORE:
+            if score >= min_score:
                 per_expiry_survivors.append((ticker, direction, score, reasons, sig, ctx))
 
         per_expiry_survivors.sort(key=lambda x: -x[2])
-        print(f"[weekly] {len(per_expiry_survivors)} passed score ≥{MIN_SCORE} — fetching chains...")
+        print(f"[weekly] {len(per_expiry_survivors)} passed score ≥{min_score} — fetching chains...")
 
         for ticker, direction, score, reasons, sig, ctx in per_expiry_survivors:
             result = _find_contract(ticker, expiry, direction, sig["price"])

@@ -222,13 +222,24 @@ def _is_interesting(sig: Dict) -> Tuple[bool, str]:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def scan_market(dry_run: bool = False,
-                max_survivors: int = 60) -> List[WeeklyAlert]:
+                max_survivors: int = 60,
+                min_score: int = 7,
+                news_cap: int = 50) -> List[WeeklyAlert]:
     """Run the market-wide scan: prescreen ~550 → deep scan survivors.
 
     `max_survivors` caps how many names enter the deep scan. The deep scan
     fetches news + chains per ticker and the slowest leg is Polygon news at
     12.5s/req. 60 tickers ≈ 12 minutes worst-case for Polygon, but parallel
     sources and the inner technical filter inside scan_weekly trim it down.
+
+    Tuning vs the curated weekly scanner:
+      - `min_score=7` (vs default 8): mid-cap S&P/Nasdaq names often have
+        sparse Polygon/Finnhub coverage. Without news points, even a clean
+        technical setup tops out at 6-7. Drop the bar by 1 so genuine bullish
+        setups aren't filtered out by missing news data.
+      - `news_cap=50` (vs default 25): the prescreen already trims ~550 to
+        ~60. The default cap of 25 silently drops half the survivors before
+        they even get news enrichment.
     """
     universe = get_market_universe()
     if not universe:
@@ -283,5 +294,16 @@ def scan_market(dry_run: bool = False,
     # Hand the survivor list to the regular weekly scanner — it does the
     # option chain + news + scoring + dual-expiry work for us.
     survivor_tickers = [s[0] for s in survivors]
-    print(f"[market] handing {len(survivor_tickers)} survivors to weekly deep-scan...")
-    return scan_weekly(survivor_tickers, dry_run=dry_run)
+    print(f"[market] handing {len(survivor_tickers)} survivors to weekly deep-scan "
+          f"(min_score={min_score}, news_cap={news_cap})...")
+    alerts = scan_weekly(
+        survivor_tickers,
+        dry_run=dry_run,
+        news_cap=news_cap,
+        min_score=min_score,
+    )
+    print(f"[market] funnel: universe={len(universe)} → "
+          f"prescreen_survivors={len(survivor_tickers)} → "
+          f"emitted={len(alerts)} (CALL={sum(1 for a in alerts if a.direction == 'CALL')}, "
+          f"PUT={sum(1 for a in alerts if a.direction == 'PUT')})")
+    return alerts

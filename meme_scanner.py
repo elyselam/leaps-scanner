@@ -376,107 +376,129 @@ def _score_meme(sig: Dict, short: Dict, wsb: Optional[Dict],
 
 def _rally_score(sig: Dict, short: Dict, wsb: Optional[Dict],
                  stocktwits: Optional[Dict], gex: Optional[Dict]) -> float:
-    """Forward-looking probability that this name rallies from HERE.
+    """Rank meme names by: already running big TODAY, OR high likelihood of
+    running soon.
 
-    Differs from `_score_meme` in that it cares about *direction*. A name
-    down 11% on heavy volume is "interesting" but not a rally setup —
-    that's distribution. We want green-and-confirmed names with fuel.
+    Design philosophy:
+      - A name up +20% on 5x volume should be the FIRST thing you see —
+        that's the run you want to ride or watch.
+      - A name with a squeeze-fuel setup (high SI, accumulation pattern,
+        breakout about to trigger) ranks next — that's the one to watch for
+        an entry.
+      - Red-day names rank dead last regardless of SI or WSB hype — the
+        run isn't happening today, whatever the setup says.
+      - NO penalty for "too parabolic". Meme runs extend. A name on its 7th
+        green day with growing volume is MORE interesting, not less.
 
-    Rough scale 0..15. Negative possible if structure is bearish.
+    Rough scale: -8..+20.  Already-running names easily hit 12–18.
     """
     if not sig:
         return 0.0
 
     score = 0.0
-    ret_1d   = sig.get("ret_1d") or 0.0
-    vol_r    = sig.get("vol_ratio", 1.0)
-    up_str   = sig.get("up_streak", 0)
-    breakout = sig.get("breakout_20d")
+    ret_1d      = sig.get("ret_1d") or 0.0
+    ret_5d      = sig.get("ret_5d") or 0.0
+    vol_r       = sig.get("vol_ratio", 1.0)
+    up_str      = sig.get("up_streak", 0)
+    breakout    = sig.get("breakout_20d")
     today_green = sig.get("today_green", False)
 
-    # ── DIRECTIONAL BIAS (the thing CAR was missing) ──
-    # Today's move drives the whole picture. Red day = penalize hard.
-    if   ret_1d >=  0.10: score += 4.0
-    elif ret_1d >=  0.05: score += 3.0
-    elif ret_1d >=  0.02: score += 2.0
-    elif ret_1d >=  0.00: score += 0.5
-    elif ret_1d >= -0.02: score -= 1.0
-    elif ret_1d >= -0.05: score -= 3.0
-    else:                 score -= 5.0   # ≥5% red — falling knife
+    # ══ ALREADY RUNNING — today's move is king ═══════════════════════════
+    # Linear scaling: bigger move = proportionally higher rank.
+    # A +25% day scores 12.5 — dominates everything else.
+    if ret_1d >= 0.03:
+        score += ret_1d * 50   # +3%→1.5, +5%→2.5, +10%→5, +20%→10, +30%→15
+    elif ret_1d >= 0.00:
+        score += ret_1d * 20   # +0%→0, +1%→0.2, +2%→0.4 — mild positive
+    elif ret_1d >= -0.03:
+        score -= 2.0           # small red — not running today
+    else:
+        score -= 5.0 + abs(ret_1d) * 20   # deep red — actively dying
 
-    # ── VOLUME × DIRECTION ──
-    # High vol on a green day = accumulation. High vol on a red day = distribution.
-    if vol_r >= 2.0:
-        if today_green: score += 2.0
+    # ══ MULTI-DAY RUN (5d momentum) ══════════════════════════════════════
+    # Catches names that have been building for days (not just today's pop).
+    if ret_5d >= 0.30:
+        score += 4.0   # massive multi-day squeeze in progress
+    elif ret_5d >= 0.20:
+        score += 3.0
+    elif ret_5d >= 0.10:
+        score += 1.5
+    elif ret_5d >= 0.05:
+        score += 0.5
+
+    # ══ VOLUME × DIRECTION ══════════════════════════════════════════════
+    # Heavy volume on a green day confirms the move is real (not a dead-cat).
+    if vol_r >= 5.0:
+        if today_green: score += 4.0
+        else:           score -= 2.0
+    elif vol_r >= 3.0:
+        if today_green: score += 3.0
         else:           score -= 1.5
+    elif vol_r >= 2.0:
+        if today_green: score += 2.0
+        else:           score -= 1.0
     elif vol_r >= 1.5:
         if today_green: score += 1.0
         else:           score -= 0.5
 
-    # ── BREAKOUT IN PROGRESS ──
-    if breakout and today_green:
-        score += 2.0
+    # ══ UP-STREAK (no exhaustion penalty — memes extend) ════════════════
+    if   up_str >= 5: score += 3.0    # sustained run — real momentum
+    elif up_str >= 3: score += 2.0    # building
+    elif up_str >= 2: score += 1.0    # early confirmation
 
-    # ── SHORT-SQUEEZE FUEL — only counts when ALREADY moving up ──
+    # ══ BREAKOUT ═══════════════════════════════════════════════════════════
+    if breakout and today_green:
+        score += 2.5
+
+    # ══ GAP UP ═════════════════════════════════════════════════════════════
+    if sig.get("gap_up"):
+        score += 1.5
+
+    # ══ SHORT-SQUEEZE FUEL — amplifies green moves ═══════════════════════
     spf = short.get("short_pct_float") or 0
     dtc = short.get("days_to_cover")   or 0
-    if ret_1d > 0 or up_str >= 2:
-        if   spf >= 0.30: score += 3.0
-        elif spf >= 0.20: score += 2.0
+    if today_green or up_str >= 2:
+        # SI is fuel when the fire is already burning
+        if   spf >= 0.30: score += 3.5
+        elif spf >= 0.20: score += 2.5
         elif spf >= 0.10: score += 1.0
-        if dtc >= 7:      score += 1.0
+        if dtc >= 7:      score += 1.5
         elif dtc >= 4:    score += 0.5
     else:
-        # Heavy SI on a red day = squeeze fizzling, not building
-        if spf >= 0.20:   score -= 0.5
+        # SI on a red day = shorts winning, not fuel
+        if spf >= 0.20:   score -= 1.0
 
-    # ── UP-STREAK FRESHNESS (penalize parabolic exhaustion) ──
-    if   up_str == 0:        pass
-    elif up_str <= 2:        score += 0.5    # just starting
-    elif up_str <= 4:        score += 1.5    # building momentum
-    elif up_str <= 6:        score += 1.0    # mature run
-    elif up_str <= 8:        score += 0.0    # late
-    else:                    score -= 1.0    # too parabolic, mean-reversion risk
+    # ══ GAMMA EXPOSURE ═══════════════════════════════════════════════════
+    if gex:
+        if gex.get("gamma_setup"):
+            score += 3.0
+        else:
+            cp     = gex.get("call_put_oi_ratio") or 0
+            magnet = gex.get("magnet_distance_pct")
+            if cp >= 3.0 and today_green:    score += 1.5
+            elif cp >= 2.0 and today_green:  score += 0.5
+            if magnet is not None and 0 <= magnet <= 0.05 and today_green:
+                score += 1.0
 
-    # ── GAP UP ──
-    if sig.get("gap_up"):
-        score += 1.0
+    # ══ SOCIAL — amplifiers, not drivers ═════════════════════════════════
+    if wsb:
+        rk = wsb.get("rank") or 99
+        ch = wsb.get("change_pct")
+        if rk <= 5 and today_green:     score += 2.0
+        elif rk <= 10 and today_green:  score += 1.5
+        elif rk <= 25 and today_green:  score += 0.5
+        if ch is not None and ch >= 100 and today_green:
+            score += 1.5
 
-    # ── STOCKTWITS sentiment alignment ──
     if stocktwits:
         s_score = stocktwits.get("sentiment_score")
         s_vel   = stocktwits.get("message_velocity") or 1.0
         tagged  = stocktwits.get("tagged_total") or 0
         if tagged >= 5 and s_score is not None:
-            # Aligned = sentiment matches today's direction
             if today_green and s_score >= 0.4:   score += 1.5
             elif today_green and s_score >= 0.2: score += 0.5
-            elif not today_green and s_score >= 0.4:
-                # bullish chatter despite red day — possibly still a setup
-                score += 0.5
-        if s_vel >= 3.0 and today_green:  score += 1.0
+        if s_vel >= 3.0 and today_green:  score += 1.5
         elif s_vel >= 2.0 and today_green: score += 0.5
-
-    # ── WSB MENTIONS ──
-    if wsb:
-        rk = wsb.get("rank") or 99
-        ch = wsb.get("change_pct")
-        if rk <= 10 and today_green:    score += 1.5
-        elif rk <= 25 and today_green:  score += 0.5
-        if ch is not None and ch >= 100 and today_green:
-            score += 1.0
-
-    # ── GAMMA EXPOSURE ──
-    if gex:
-        if gex.get("gamma_setup"):  # all 3 conditions met (cp_ratio≥2, magnet 0-10%, +GEX)
-            score += 2.5
-        else:
-            cp     = gex.get("call_put_oi_ratio") or 0
-            magnet = gex.get("magnet_distance_pct")
-            if cp >= 3.0 and today_green:    score += 1.0
-            elif cp >= 2.0 and today_green:  score += 0.5
-            if magnet is not None and 0 <= magnet <= 0.05 and today_green:
-                score += 1.0
 
     return score
 
@@ -510,13 +532,24 @@ def scan_meme(universe: List[str], dry_run: bool = False) -> List[MemeAlert]:
         scan_universe = universe
 
     alerts: List[MemeAlert] = []
+    # Diagnostic counters so the workflow log self-explains what happened to
+    # each universe member (esp. when a "meme run" name like GME silently
+    # doesn't surface — see which gate dropped it).
+    skipped_no_bars       = 0
+    skipped_pre_filter    = 0
+    skipped_no_tier       = 0
+    pre_filter_drops: List[str] = []
+    no_tier_drops:    List[str] = []
+
     for ticker in scan_universe:
         bars = bars_map.get(ticker)
         if bars is None or bars.empty or len(bars) < 30:
+            skipped_no_bars += 1
             continue
 
         sig = _compute_meme_signals(bars)
         if not sig:
+            skipped_no_bars += 1
             continue
 
         # Quick pre-filter: only fetch short interest if SOMETHING unusual is going on
@@ -529,6 +562,14 @@ def scan_meme(universe: List[str], dry_run: bool = False) -> List[MemeAlert]:
             or ticker in wsb_data
         )
         if not worth_checking:
+            skipped_pre_filter += 1
+            # Keep a short trail of dropped *known* meme names so we can see
+            # whether e.g. GME failed pre-filter (=> nothing was happening)
+            # vs. failed scoring (=> something happened but didn't qualify).
+            if ticker in universe:
+                pre_filter_drops.append(
+                    f"{ticker}(vol={sig['vol_ratio']:.1f}x,1d={(sig.get('ret_1d') or 0)*100:+.1f}%)"
+                )
             continue
 
         short = _fetch_short_interest(ticker)
@@ -551,6 +592,13 @@ def scan_meme(universe: List[str], dry_run: bool = False) -> List[MemeAlert]:
 
         score, reasons, tier = _score_meme(sig, short, wsb, st, gex)
         if not tier:
+            skipped_no_tier += 1
+            if ticker in universe:
+                no_tier_drops.append(
+                    f"{ticker}(score={score},vol={sig['vol_ratio']:.1f}x,"
+                    f"1d={(sig.get('ret_1d') or 0)*100:+.1f}%,"
+                    f"SI={(short.get('short_pct_float') or 0)*100:.0f}%)"
+                )
             continue
 
         rally = _rally_score(sig, short, wsb, st, gex)
@@ -590,6 +638,22 @@ def scan_meme(universe: List[str], dry_run: bool = False) -> List[MemeAlert]:
         print(f"  {emoji} {ticker:6s}  {tier:8s}  score={score}  rally={rally:+.1f}  "
               f"vol={sig['vol_ratio']:.1f}x  1d={(sig.get('ret_1d') or 0)*100:+.1f}%  "
               f"SI={(short.get('short_pct_float') or 0)*100:.0f}%")
+
+    # ── post-mortem: why did names drop out ──────────────────────────────
+    # The "where did GME go?" diagnostic. Read top-down in the log.
+    print(f"[meme] funnel: universe={len(scan_universe)} → "
+          f"alerts={len(alerts)}  "
+          f"(no_bars={skipped_no_bars}, pre_filter={skipped_pre_filter}, "
+          f"no_tier={skipped_no_tier})")
+    if pre_filter_drops:
+        # Truncate hard so we don't blow up the workflow log on quiet days
+        head = ", ".join(pre_filter_drops[:15])
+        more = f"  +{len(pre_filter_drops)-15} more" if len(pre_filter_drops) > 15 else ""
+        print(f"[meme]   pre-filter drops (nothing unusual today): {head}{more}")
+    if no_tier_drops:
+        head = ", ".join(no_tier_drops[:10])
+        more = f"  +{len(no_tier_drops)-10} more" if len(no_tier_drops) > 10 else ""
+        print(f"[meme]   below-tier drops (something happening, didn't qualify): {head}{more}")
 
     # Rank by forward-looking rally likelihood (NOT just tier+score), then
     # break ties by raw score so SQUEEZE-tier wins close calls.
