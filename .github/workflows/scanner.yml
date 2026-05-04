@@ -60,7 +60,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     env:
       LEAPS_ALERT_WEBHOOK_URL: ${{ secrets.LEAPS_ALERT_WEBHOOK_URL }}
